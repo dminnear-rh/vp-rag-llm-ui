@@ -15,7 +15,7 @@ Run::
 
 import os
 import json
-from typing import List, Tuple, Generator, Optional
+from typing import List, Dict, Generator, Optional
 
 import httpx
 import gradio as gr
@@ -30,15 +30,8 @@ API_URL = os.getenv("RAG_API_URL", "http://localhost:8080")
 # -----------------------------------------------------------------------------
 
 
-def get_models() -> Tuple[List[str], Optional[str], dict]:
-    """Return (choices, default_choice, grouped_models).
-
-    * ``choices`` is a flat list suitable for gr.Dropdown (e.g. ["openai:gpt-4o", "vllm:mistral-7b"]).
-    * Each label is prefixed with the model_type so users know where it lives.
-    * ``default_choice`` is the choice label that matches the API's default model.
-    * ``grouped_models`` preserves the grouping in case you want to build a custom
-      component later.
-    """
+def get_models() -> tuple[list[str], Optional[str], dict]:
+    """Return (choices, default_choice, grouped_models)."""
     try:
         resp = httpx.get(f"{API_URL}/models", timeout=10)
         resp.raise_for_status()
@@ -48,7 +41,7 @@ def get_models() -> Tuple[List[str], Optional[str], dict]:
         return [], None, {}
 
     default_model = data.get("default_model")
-    grouped = {}
+    grouped: dict[str, list[str]] = {}
     for m in data.get("models", []):
         grouped.setdefault(m["model_type"], []).append(m["name"])
 
@@ -59,7 +52,7 @@ def get_models() -> Tuple[List[str], Optional[str], dict]:
     return choices, default_choice, grouped
 
 
-CHOICES, DEFAULT_CHOICE, MODEL_GROUPS = get_models()
+CHOICES, DEFAULT_CHOICE, _MODEL_GROUPS = get_models()
 
 
 def _label_to_model(choice: Optional[str]) -> Optional[str]:
@@ -75,24 +68,20 @@ def _label_to_model(choice: Optional[str]) -> Optional[str]:
 
 
 def stream_chat(
-    question: str, chat_history: List[Tuple[str, str]], model_choice: Optional[str]
+    question: str, chat_history: list[Dict[str, str]], model_choice: Optional[str]
 ) -> Generator[str, None, None]:
-    """Generator that yields incremental assistant tokens coming from the backend.
+    """Yield assistant tokens coming from the backend.
 
-    ``chat_history`` is a list of (user, assistant) tuples *including* the current
-    turn whose assistant part is still empty. We send **all fully‑formed previous
-    messages** (both user and assistant) back to the backend so it has full
-    conversational context.
+    ``chat_history`` follows the gradio **messages** schema: each item is
+    ``{"role": "user"|"assistant", "content": "..."}``.
+    The last two entries are the current user turn and an empty assistant
+    placeholder; earlier entries are complete turns that will be sent as
+    history.
     """
 
-    # build flattened history excluding the unfinished last turn
-    prev_pairs = chat_history[:-1]
-    history_flat: List[str] = []
-    for user_msg, assistant_msg in prev_pairs:
-        if user_msg:
-            history_flat.append(user_msg)
-        if assistant_msg:
-            history_flat.append(assistant_msg)
+    # earlier fully‑formed messages (exclude current user + placeholder assistant)
+    prev_messages = chat_history[:-2] if len(chat_history) > 1 else []
+    history_flat = [m["content"] for m in prev_messages if m.get("content")]
 
     payload = {
         "question": question,
@@ -106,18 +95,17 @@ def stream_chat(
     with httpx.stream(
         "POST", f"{API_URL}/rag-query/stream", json=payload, timeout=None
     ) as r:
-        for raw in r.iter_lines():
+        for raw in r.iter_lines():  # iter_lines yields *str* by default (decoded)
             if not raw:
                 continue
-            if raw.startswith(b"data: "):
-                data = raw[len(b"data: ") :].decode()
+            if raw.startswith("data: "):
+                data = raw[len("data: ") :]
                 if data.strip() == "[DONE]":
                     break
                 try:
                     chunk = json.loads(data)
                 except json.JSONDecodeError:
-                    # Skip malformed lines just in case
-                    continue
+                    continue  # skip malformed lines
                 token = chunk.get("content", "")
                 yield token
 
@@ -127,16 +115,21 @@ def stream_chat(
 # -----------------------------------------------------------------------------
 
 
-def respond(message: str, chat_history: List[Tuple[str, str]], model_choice: str):
-    """Adds the new user turn, streams assistant tokens, and updates UI."""
-    chat_history = chat_history + [(message, "")]  # append placeholder for assistant
-    yield chat_history  # display user message immediately
+def respond(message: str, chat_history: list[Dict[str, str]], model_choice: str):
+    """Streams assistant reply while updating the message list in‑place."""
 
-    assistant_buffer = ""
+    # Append current user message + empty assistant placeholder
+    chat_history = chat_history + [
+        {"role": "user", "content": message},
+        {"role": "assistant", "content": ""},
+    ]
+
+    yield chat_history  # show user turn immediately
+
+    assistant_buf = ""
     for token in stream_chat(message, chat_history, model_choice):
-        assistant_buffer += token
-        chat_history[-1] = (message, assistant_buffer)
-        # continually update the UI so users see tokens in real time
+        assistant_buf += token
+        chat_history[-1]["content"] = assistant_buf
         yield chat_history
 
 
@@ -160,7 +153,9 @@ with gr.Blocks(title="Validated Patterns RAG Chat") as demo:
             interactive=True,
         )
 
-    chatbot = gr.Chatbot(label="Chat", height=500, show_copy_button=True)
+    chatbot = gr.Chatbot(
+        label="Chat", height=500, show_copy_button=True, type="messages"
+    )
     msg = gr.Textbox(
         placeholder="How are secrets managed in Validated Patterns?",
         label="Your question",
@@ -172,7 +167,7 @@ with gr.Blocks(title="Validated Patterns RAG Chat") as demo:
 
     # Wire events
     msg.submit(respond, inputs=[msg, chatbot, model_sel], outputs=chatbot)
-    clear.click(lambda: None, None, chatbot, queue=False)
+    clear.click(lambda: [], None, chatbot, queue=False)
 
 # -----------------------------------------------------------------------------
 # Main
