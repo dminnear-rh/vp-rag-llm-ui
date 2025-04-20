@@ -94,6 +94,7 @@ def launch_app():
             outputs=chatbot,
         )
 
+    demo.queue()
     demo.launch(server_name="0.0.0.0", server_port=7860)
 
 
