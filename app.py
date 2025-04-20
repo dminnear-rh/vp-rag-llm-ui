@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 
@@ -11,12 +12,16 @@ async def fetch_models():
     async with httpx.AsyncClient() as client:
         resp = await client.get(f"{API_URL}/models")
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        return data["models"], data["default_model"]
 
 
 async def stream_rag(message, history, model):
     full_response = ""
-    past_user_inputs = [turn[0] for turn in history if turn[0]]
+
+    # Reformat history for backend: extract only user messages
+    past_user_inputs = [msg["content"] for msg in history if msg["role"] == "user"]
+
     payload = {"question": message, "history": past_user_inputs, "model": model}
 
     async with httpx.AsyncClient(timeout=None) as client:
@@ -30,46 +35,67 @@ async def stream_rag(message, history, model):
                         break
                     try:
                         chunk = json.loads(data)
-                        delta = chunk.get("content", "")
+                        delta = chunk["content"]
                         if delta:
                             full_response += delta
-                            yield full_response
+                            yield history + [
+                                {"role": "user", "content": message},
+                                {"role": "assistant", "content": full_response},
+                            ]
                     except Exception as e:
                         print(f"⚠️ Failed to parse chunk: {e}\n{data}")
 
     if not full_response:
-        yield "⚠️ No response generated. Please try rephrasing your question."
+        yield history + [
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": "⚠️ No response generated. Please try rephrasing your question.",
+            },
+        ]
 
 
-with gr.Blocks() as demo:
-    gr.Markdown("## 🤖 OpenShift Pattern Assistant")
-    gr.Markdown(
-        "Ask questions about OpenShift Validated Patterns — usage, customization, testing, and more."
-    )
+def launch_app():
+    models_data, default_model = asyncio.run(fetch_models())
+    model_names = [m["name"] for m in models_data]
 
-    model_dropdown = gr.Dropdown(label="Select Model", interactive=True)
+    with gr.Blocks() as demo:
+        gr.Markdown("## 🤖 OpenShift Pattern Assistant")
+        gr.Markdown(
+            "Ask questions about OpenShift Validated Patterns — usage, customization, testing, and more."
+        )
 
-    chatbot = gr.Chatbot(render_markdown=True)
-    msg = gr.Textbox(
-        label="Ask a question...",
-        placeholder="e.g. How are secrets managed in patterns?",
-    )
-    clear = gr.Button("Clear Chat")
+        with gr.Row():
+            model_dropdown = gr.Dropdown(
+                choices=model_names,
+                value=default_model,
+                label="Select Model",
+                interactive=True,
+            )
 
-    state = gr.State([])
+        chatbot = gr.Chatbot(label="Chat", render_markdown=True, type="messages")
+        msg = gr.Textbox(
+            label="Ask a question...",
+            placeholder="e.g. How are secrets managed in patterns?",
+        )
+        send_btn = gr.Button("Send")
 
-    async def handle_submit(message, history, model_choice):
-        async for partial in stream_rag(message, history, model_choice):
-            yield partial
+        def on_submit(message, history, model_choice):
+            return stream_rag(message, history, model_choice)
 
-    msg.submit(fn=handle_submit, inputs=[msg, chatbot, model_dropdown], outputs=chatbot)
-    clear.click(lambda: ([], []), outputs=[chatbot, state])
+        send_btn.click(
+            fn=on_submit,
+            inputs=[msg, chatbot, model_dropdown],
+            outputs=chatbot,
+        )
+        msg.submit(
+            fn=on_submit,
+            inputs=[msg, chatbot, model_dropdown],
+            outputs=chatbot,
+        )
 
-    # ⬇️ Populate models when UI loads
-    async def populate_models():
-        models = await fetch_models()
-        return gr.update(choices=models["models"], value=models["default_model"])
+    demo.launch(server_name="0.0.0.0", server_port=7860)
 
-    demo.load(fn=populate_models, outputs=model_dropdown)
 
-demo.launch(server_name="0.0.0.0", server_port=7860)
+if __name__ == "__main__":
+    launch_app()
