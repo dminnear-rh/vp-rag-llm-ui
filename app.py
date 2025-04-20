@@ -1,5 +1,6 @@
-import os
 import json
+import os
+
 import gradio as gr
 import httpx
 
@@ -10,16 +11,12 @@ async def fetch_models():
     async with httpx.AsyncClient() as client:
         resp = await client.get(f"{API_URL}/models")
         resp.raise_for_status()
-        data = resp.json()
-        return data["models"], data["default_model"]
+        return await resp.json()
 
 
 async def stream_rag(message, history, model):
     full_response = ""
-
-    # Format history into just prior user messages
     past_user_inputs = [turn[0] for turn in history if turn[0]]
-
     payload = {"question": message, "history": past_user_inputs, "model": model}
 
     async with httpx.AsyncClient(timeout=None) as client:
@@ -33,7 +30,7 @@ async def stream_rag(message, history, model):
                         break
                     try:
                         chunk = json.loads(data)
-                        delta = chunk["choices"][0]["delta"].get("content", "")
+                        delta = chunk.get("content", "")
                         if delta:
                             full_response += delta
                             yield full_response
@@ -44,51 +41,35 @@ async def stream_rag(message, history, model):
         yield "⚠️ No response generated. Please try rephrasing your question."
 
 
-# === Build UI dynamically after fetching models ===
-def launch_app():
-    import asyncio
+with gr.Blocks() as demo:
+    gr.Markdown("## 🤖 OpenShift Pattern Assistant")
+    gr.Markdown(
+        "Ask questions about OpenShift Validated Patterns — usage, customization, testing, and more."
+    )
 
-    models_data, default_model = asyncio.run(fetch_models())
-    model_names = [m["name"] for m in models_data]
+    model_dropdown = gr.Dropdown(label="Select Model", interactive=True)
 
-    with gr.Blocks() as demo:
-        gr.Markdown("## 🤖 OpenShift Pattern Assistant")
-        gr.Markdown(
-            "Ask questions about OpenShift Validated Patterns — usage, customization, testing, and more."
-        )
+    chatbot = gr.Chatbot(render_markdown=True)
+    msg = gr.Textbox(
+        label="Ask a question...",
+        placeholder="e.g. How are secrets managed in patterns?",
+    )
+    clear = gr.Button("Clear Chat")
 
-        with gr.Row():
-            model_dropdown = gr.Dropdown(
-                choices=model_names,
-                value=default_model,
-                label="Select Model",
-                interactive=True,
-            )
+    state = gr.State([])
 
-        chatbot = gr.Chatbot(render_markdown=True)
-        msg = gr.Textbox(
-            label="Ask a question...",
-            placeholder="e.g. How are secrets managed in patterns?",
-        )
-        send_btn = gr.Button("Send")
+    async def handle_submit(message, history, model_choice):
+        async for partial in stream_rag(message, history, model_choice):
+            yield partial
 
-        async def handle_submit(message, history, model_choice):
-            async for partial in stream_rag(message, history, model_choice):
-                yield partial
+    msg.submit(fn=handle_submit, inputs=[msg, chatbot, model_dropdown], outputs=chatbot)
+    clear.click(lambda: ([], []), outputs=[chatbot, state])
 
-        send_btn.click(
-            fn=handle_submit,
-            inputs=[msg, chatbot, model_dropdown],
-            outputs=chatbot,
-        )
-        msg.submit(
-            fn=handle_submit,
-            inputs=[msg, chatbot, model_dropdown],
-            outputs=chatbot,
-        )
+    # ⬇️ Populate models when UI loads
+    async def populate_models():
+        models = await fetch_models()
+        return gr.update(choices=models["models"], value=models["default_model"])
 
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.load(fn=populate_models, outputs=model_dropdown)
 
-
-if __name__ == "__main__":
-    launch_app()
+demo.launch(server_name="0.0.0.0", server_port=7860)
