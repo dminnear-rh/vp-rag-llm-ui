@@ -18,9 +18,7 @@ async def fetch_models():
 
 async def stream_rag(message, history, model):
     full_response = ""
-
-    # Reformat history for backend: extract only user messages
-    past_user_inputs = [msg["content"] for msg in history if msg["role"] == "user"]
+    past_user_inputs = [turn[0] for turn in history if turn[0]]
 
     payload = {"question": message, "history": past_user_inputs, "model": model}
 
@@ -38,21 +36,11 @@ async def stream_rag(message, history, model):
                         delta = chunk["content"]
                         if delta:
                             full_response += delta
-                            yield history + [
-                                {"role": "user", "content": message},
-                                {"role": "assistant", "content": full_response},
-                            ]
+                            yield full_response
                     except Exception as e:
                         print(f"⚠️ Failed to parse chunk: {e}\n{data}")
-
     if not full_response:
-        yield history + [
-            {"role": "user", "content": message},
-            {
-                "role": "assistant",
-                "content": "⚠️ No response generated. Please try rephrasing your question.",
-            },
-        ]
+        yield "⚠️ No response generated. Please try rephrasing your question."
 
 
 def launch_app():
@@ -67,13 +55,10 @@ def launch_app():
 
         with gr.Row():
             model_dropdown = gr.Dropdown(
-                choices=model_names,
-                value=default_model,
-                label="Select Model",
-                interactive=True,
+                choices=model_names, value=default_model, label="Model"
             )
 
-        chatbot = gr.Chatbot(label="Chat", render_markdown=True, type="messages")
+        chatbot = gr.Chatbot(render_markdown=True, label="Chat", type="messages")
         msg = gr.Textbox(
             label="Ask a question...",
             placeholder="e.g. How are secrets managed in patterns?",
@@ -81,20 +66,14 @@ def launch_app():
         send_btn = gr.Button("Send")
 
         def on_submit(message, history, model_choice):
-            return stream_rag(message, history, model_choice)
+            return gr.Stream(stream_rag(message, history, model_choice))
 
         send_btn.click(
-            fn=on_submit,
-            inputs=[msg, chatbot, model_dropdown],
-            outputs=chatbot,
+            fn=on_submit, inputs=[msg, chatbot, model_dropdown], outputs=chatbot
         )
-        msg.submit(
-            fn=on_submit,
-            inputs=[msg, chatbot, model_dropdown],
-            outputs=chatbot,
-        )
+        msg.submit(fn=on_submit, inputs=[msg, chatbot, model_dropdown], outputs=chatbot)
 
-    demo.queue()
+    demo.queue()  # Important to enable async streaming
     demo.launch(server_name="0.0.0.0", server_port=7860)
 
 
