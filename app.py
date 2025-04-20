@@ -63,7 +63,6 @@ def launch_app():
     demo = gr.ChatInterface(
         fn=handle_chat,
         additional_inputs=[model_dropdown],
-        additional_inputs_accordion_name="Advanced Options",
         title="🤖 OpenShift Pattern Assistant",
         description="Ask questions about OpenShift Validated Patterns — usage, customization, testing, and more.",
         chatbot=gr.Chatbot(render_markdown=True, type="messages"),
