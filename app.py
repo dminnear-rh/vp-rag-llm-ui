@@ -68,8 +68,7 @@ def launch_app():
         chatbot=gr.Chatbot(render_markdown=True, type="messages"),
     )
 
-    demo.queue()
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch(server_name="0.0.0.0", server_port=7860, queue=False)
 
 
 if __name__ == "__main__":
