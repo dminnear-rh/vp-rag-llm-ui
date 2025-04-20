@@ -8,7 +8,7 @@ import httpx
 API_URL = os.getenv("RAG_API_URL", "http://localhost:8080")
 
 
-# === Fetch available models from the API ===
+# === Fetch models at startup ===
 async def fetch_models():
     async with httpx.AsyncClient() as client:
         resp = await client.get(f"{API_URL}/models")
@@ -17,7 +17,7 @@ async def fetch_models():
         return data["models"], data["default_model"]
 
 
-# === RAG Streaming Function ===
+# === Stream RAG completion ===
 async def stream_rag(message, history, model_name):
     full_response = ""
     payload = {
@@ -44,39 +44,32 @@ async def stream_rag(message, history, model_name):
                         yield f"⚠️ Failed to parse chunk: {e}\n{data}"
 
 
-# === Main App Launcher ===
+# === Main ===
 def launch_app():
     models_data, default_model = asyncio.run(fetch_models())
     model_names = [m["name"] for m in models_data]
 
-    with gr.Blocks() as demo:
-        with gr.Row():
-            model_dropdown = gr.Dropdown(
-                label="Select Model",
-                choices=model_names,
-                value=default_model,
-                interactive=True,
-            )
+    # Define as outer scope so dropdown value can be captured in callback
+    model_dropdown = gr.Dropdown(
+        choices=model_names,
+        value=default_model,
+        label="Select Model",
+        interactive=True,
+    )
 
-        chatbot = gr.Chatbot(
-            label="🤖 OpenShift Pattern Assistant",
-            render_markdown=True,
-            type="messages",
-        )
-        message_input = gr.Textbox(
-            placeholder="Ask a question...", label="Your message"
-        )
+    async def handle_chat(message, history):
+        return await stream_rag(message, history, model_dropdown.value)
 
-        async def handle_chat(message, history):
-            model = model_dropdown.value
-            return await stream_rag(message, history, model)
+    demo = gr.ChatInterface(
+        fn=handle_chat,
+        additional_inputs=[model_dropdown],
+        additional_inputs_accordion_name="Advanced Options",
+        title="🤖 OpenShift Pattern Assistant",
+        description="Ask questions about OpenShift Validated Patterns — usage, customization, testing, and more.",
+        chatbot=gr.Chatbot(render_markdown=True, type="messages"),
+    )
 
-        gr.ChatInterface(
-            fn=handle_chat,
-            chatbot=chatbot,
-            textbox=message_input,
-        )
-
+    demo.queue()
     demo.launch(server_name="0.0.0.0", server_port=7860)
 
 
