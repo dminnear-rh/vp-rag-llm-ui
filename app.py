@@ -11,7 +11,7 @@ async def fetch_models():
     async with httpx.AsyncClient() as client:
         resp = await client.get(f"{API_URL}/models")
         resp.raise_for_status()
-        return await resp.json()
+        return resp.json()
 
 
 async def stream_rag(message, history, model):
