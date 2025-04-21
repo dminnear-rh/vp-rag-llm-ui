@@ -8,12 +8,12 @@ import gradio as gr
 API_URL = os.getenv("RAG_API_URL", "http://localhost:8080")
 
 # -----------------------------------------------------------------------------
-# Model helpers (no longer run at import‑time)
+# Model helpers (lazy)
 # -----------------------------------------------------------------------------
 
 
 def fetch_models() -> tuple[list[str], Optional[str]]:
-    """Return (choices, default) or ([], None) on failure."""
+    """Hit /models and return (choices, default). Empty list on failure."""
     try:
         r = httpx.get(f"{API_URL}/models", timeout=10)
         r.raise_for_status()
@@ -24,7 +24,8 @@ def fetch_models() -> tuple[list[str], Optional[str]]:
 
     choices = [f"{m['model_type']}:{m['name']}" for m in data.get("models", [])]
     default = next(
-        (c for c in choices if c.split(":", 1)[1] == data.get("default_model")), None
+        (c for c in choices if c.split(":", 1)[1] == data.get("default_model")),
+        None,
     )
     return choices, default
 
@@ -34,7 +35,7 @@ def label_to_model(choice: str | None) -> str | None:
 
 
 # -----------------------------------------------------------------------------
-# Backend stream glue
+# Streaming
 # -----------------------------------------------------------------------------
 
 
@@ -59,14 +60,14 @@ def stream_chat(
             if chunk.strip() == "[DONE]":
                 break
             try:
-                token = json.loads(chunk).get("content", "")
-            except json.JSONDecodeError:
+                token = json.loads(chunk)["content"]
+            except (json.JSONDecodeError, KeyError):
                 continue
             yield token
 
 
 # -----------------------------------------------------------------------------
-# Gradio callbacks
+# Callbacks
 # -----------------------------------------------------------------------------
 
 
@@ -75,7 +76,7 @@ def respond(message: str, chat_history: list[Dict[str, str]], model_choice: str)
         {"role": "user", "content": message},
         {"role": "assistant", "content": ""},
     ]
-    yield chat_history, ""  # clear textbox immediately
+    yield chat_history, ""  # clear textbox
 
     buf = ""
     for token in stream_chat(message, chat_history, model_choice):
@@ -84,7 +85,8 @@ def respond(message: str, chat_history: list[Dict[str, str]], model_choice: str)
         yield chat_history, ""
 
 
-def refresh_dropdown() -> gr.Update:
+def refresh_dropdown():
+    """Return an update dict for the model dropdown."""
     choices, default = fetch_models()
     if not choices:
         return gr.Dropdown.update(
@@ -94,7 +96,7 @@ def refresh_dropdown() -> gr.Update:
 
 
 # -----------------------------------------------------------------------------
-# UI Layout
+# UI
 # -----------------------------------------------------------------------------
 with gr.Blocks(title="Validated Patterns RAG Chat", theme="soft") as demo:
     gr.Markdown(
@@ -105,11 +107,7 @@ with gr.Blocks(title="Validated Patterns RAG Chat", theme="soft") as demo:
     )
 
     with gr.Row():
-        model_sel = gr.Dropdown(
-            label="Model (source:name)",
-            interactive=True,
-            scale=5,
-        )
+        model_sel = gr.Dropdown(label="Model (source:name)", interactive=True, scale=5)
         refresh_btn = gr.Button("⟳", variant="secondary", scale=1)
 
     chatbot = gr.Chatbot(
@@ -127,15 +125,14 @@ with gr.Blocks(title="Validated Patterns RAG Chat", theme="soft") as demo:
         send_btn = gr.Button("Send", variant="primary")
 
     gr.Markdown("<small>Hit <kbd>Enter</kbd> or click <b>Send</b></small>")
-
     clear_btn = gr.Button("Clear chat")
 
     # Events
     demo.load(refresh_dropdown, None, model_sel)
     refresh_btn.click(refresh_dropdown, None, model_sel)
 
-    for trig in (msg.submit, send_btn.click):
-        trig(respond, inputs=[msg, chatbot, model_sel], outputs=[chatbot, msg])
+    for trg in (msg.submit, send_btn.click):
+        trg(respond, inputs=[msg, chatbot, model_sel], outputs=[chatbot, msg])
 
     clear_btn.click(lambda: ([], ""), None, [chatbot, msg], queue=False)
 
