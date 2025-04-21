@@ -86,13 +86,13 @@ def respond(message: str, chat_history: list[Dict[str, str]], model_choice: str)
 
 
 def refresh_dropdown():
-    """Return an update dict for the model dropdown."""
+    """Return an update dict compatible with all Gradio versions."""
     choices, default = fetch_models()
     if not choices:
-        return gr.Dropdown.update(
+        return gr.update(
             choices=["⚠️ backend unreachable"], value=None, interactive=False
         )
-    return gr.Dropdown.update(choices=choices, value=default, interactive=True)
+    return gr.update(choices=choices, value=default, interactive=True)
 
 
 # -----------------------------------------------------------------------------
